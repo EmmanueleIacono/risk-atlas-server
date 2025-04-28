@@ -1,0 +1,231 @@
+use std::collections::HashSet;
+
+use axum::{
+    body::Body,
+    extract::{Path, Query, State},
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::Deserialize;
+use sqlx::Row;
+use serde_json::Value;
+
+use crate::AppState;
+use crate::helpers;
+
+// STRUCTS
+#[derive(Deserialize)]
+pub struct TileFilterStr {
+    filters: Option<String> // e.g. "IfcSpace;IfcWall"
+}
+
+// HANDLERS
+pub async fn home_handler() -> impl IntoResponse {
+    // returning just an HTML string
+    let html_content = r#"<h1>Welcome <i>home</i></h1>"#;
+    (StatusCode::OK, html_content)
+}
+
+pub async fn get_element_vertices_handler(
+    Path((project_id, element_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let query = r#"SELECT * FROM tilesets.vertices
+                        WHERE project_id = $1 AND element_id = $2
+                        ORDER BY vertex_index ASC"#;
+
+    let rows = sqlx::query(query)
+        .bind(&project_id)
+        .bind(&element_id)
+        .fetch_all(&state.pool)
+        .await;
+
+    match rows {
+        Ok(rows) => {
+            let result_json = rows.into_iter().map(|_row| {
+                serde_json::json!({
+                    "project_id": _row.try_get::<String, _>("project_id").unwrap_or_default(),
+                    "element_id": _row.try_get::<String, _>("element_id").unwrap_or_default(),
+                    "vertex_index": _row.try_get::<i32, _>("vertex_index").unwrap_or_default(),
+                    // then x, y, z... f64...
+                })
+            })
+            .collect::<Vec<Value>>();
+
+            (StatusCode::OK, Json(result_json)).into_response()
+        }
+        Err(err) => {
+            eprintln!("Error while fetching element vertices: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+        }
+    }
+}
+
+pub async fn get_available_ifc_classes(
+    State(state): State<AppState>
+) -> impl IntoResponse {
+    let query = r#"SELECT project_id, ARRAY_AGG(DISTINCT(ifc_class)) AS ifc_classes
+                         FROM tilesets.elements
+                         GROUP BY project_id"#;
+
+    let rows = sqlx::query(query)
+        .fetch_all(&state.pool)
+        .await;
+
+    match rows {
+        Ok(rows) => {
+            let result_json: Vec<Value> = rows.into_iter().map(|_row| {
+                let project_id: String = _row.try_get("project_id").unwrap_or_default();
+                let ifc_classes: Vec<String> = _row.try_get("ifc_classes").unwrap_or_default();
+
+                serde_json::json!({
+                    "project_id": project_id,
+                    "ifc_classes": ifc_classes,
+                })
+            })
+            .collect();
+            
+            (StatusCode::OK, Json(result_json)).into_response()
+        }
+        Err(err) => {
+            eprintln!("Error while fetching available IFC classes: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+        }
+    }
+}
+
+pub async fn get_projects_handler(
+    State(state): State<AppState>
+) -> impl IntoResponse {
+    let proj_descr_exists = match helpers::check_project_description(&state.pool).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("DB error: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    };
+    let query = if proj_descr_exists {
+        "SELECT project_id, project_description FROM tilesets.project_data"
+    } else {
+        "SELECT project_id, NULL AS project_description FROM tilesets.project_data"
+    };
+
+    let rows = sqlx::query(query)
+        .fetch_all(&state.pool)
+        .await;
+
+    match rows {
+        Ok(rows) => {
+            let result_json: Vec<Value> = rows.into_iter().map(|_row| {
+                let project_id: String = _row.try_get("project_id").unwrap_or_default();
+                let project_description: Option<String> = _row.try_get("project_description").ok();
+
+                serde_json::json!({
+                    "project_id": project_id,
+                    "project_description": project_description,
+                })
+            })
+            .collect();
+            
+            (StatusCode::OK, Json(result_json)).into_response()
+        }
+        Err(err) => {
+            eprintln!("DB error: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+        }
+    }
+}
+
+pub async fn get_tileset_handler(
+    Path(project_id): Path<String>,
+    Query(tile_filter_str): Query<TileFilterStr>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    println!("Requested tileset: {}", project_id);
+
+    let allowed_classes: HashSet<String> = tile_filter_str
+        .filters
+        .as_ref()
+        .map(|flt_str| {
+            flt_str
+                .split(";")
+                .map(|st| st.trim().to_string())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let query = r#"SELECT tileset FROM tilesets.project_data WHERE project_id = $1"#;
+
+    let row = sqlx::query(query)
+        .bind(&project_id)
+        .fetch_one(&state.pool)
+        .await;
+
+    match row {
+        Ok(row) => {
+            let mut tileset_data: serde_json::Value = row.try_get("tileset").unwrap_or(Value::Null);
+            if tileset_data.is_null() {
+                return (StatusCode::NOT_FOUND, "Tileset not found").into_response();
+            }
+
+            // if there are filters, apply filtering logic
+            if !allowed_classes.is_empty() {
+                if let Some(root_node) = tileset_data.get_mut("root") {
+                    helpers::filter_tileset(root_node, &allowed_classes);
+                }
+            }
+            (StatusCode::OK, Json(tileset_data)).into_response()
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            (StatusCode::NOT_FOUND, format!("Tileset for project_id '{}' not found.", project_id)).into_response()
+        }
+        Err(err) => {
+            eprintln!("Error while fetching the tileset: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+        }
+    }
+}
+
+pub async fn get_model_handler(
+    Path(gltf_path): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    println!("Requested model: {}", gltf_path);
+
+    let query_path = format!("models/{}", gltf_path);
+
+    let query = r#"SELECT bin_gltf FROM tilesets.elements WHERE gltf_path = $1"#;
+
+    let row = sqlx::query(query)
+        .bind(&query_path)
+        .fetch_one(&state.pool)
+        .await;
+
+    match row {
+        Ok(row) => {
+            // the column is a byte array
+            let bin_gltf: Vec<u8> = row.try_get("bin_gltf").unwrap_or_default();
+
+            if bin_gltf.is_empty() {
+                return (StatusCode::NOT_FOUND, "Element binary model not found").into_response();
+            }
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "model/gltf-binary")
+                .body(Body::from(bin_gltf))
+                .unwrap()
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            (
+                StatusCode::NOT_FOUND,
+                format!("Model for path '{}' not found", gltf_path),
+            ).into_response()
+        }
+        Err(err) => {
+            eprintln!("Error while fetching a model: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+        }
+    }
+}

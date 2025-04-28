@@ -1,0 +1,89 @@
+use axum::{
+    routing::get,
+    Router,
+};
+use tower_http::cors::{Any, CorsLayer};
+use sqlx::{Pool, Postgres};
+use std::net::{Ipv4Addr, SocketAddr};
+use config as config_loader; // rename to avoid conflict with config field name
+use once_cell::sync::Lazy;
+use anyhow::Result;
+
+mod handlers;
+mod helpers;
+
+// storing config globally (just for demo)
+static CONFIG: Lazy<AppConfig> = Lazy::new(|| {
+    // loading the config from "config.ini"
+    let settings = config_loader::Config::builder()
+    .add_source(config_loader::File::with_name("config").required(true))
+    .build()
+    .expect("Cannot find or read 'config.ini' file.");
+
+    // deserializing into AppConfig struct
+    settings
+        .try_deserialize::<AppConfig>()
+        .expect("Invalid config structure")
+});
+
+// custom config struct for config.ini
+#[derive(Debug, serde::Deserialize)]
+struct AppConfig {
+    database: DatabaseConfig,
+    server: ServerConfig,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DatabaseConfig {
+    url: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ServerConfig {
+    host: String,
+    port: u16,
+}
+
+// passing around a shared state (connection pool)
+#[derive(Clone)]
+struct AppState {
+    pool: Pool<Postgres>,
+}
+
+// main, with routes
+#[tokio::main]
+async fn main() -> Result<()> {
+    // init DB connection
+    let pool = Pool::<Postgres>::connect(&CONFIG.database.url).await?;
+    println!("Connected to the PostgreSQL database.");
+
+    // build the Axum app
+    let app_state = AppState {pool};
+    let app = Router::new()
+        // routes
+        .route("/", get(handlers::home_handler))
+        .route("/vertices/{project_id}/{element_id}", get(handlers::get_element_vertices_handler)) // this is just to test things, at the moment
+        .route("/elements/ifc_classes", get(handlers::get_available_ifc_classes))
+        .route("/tilesets/projects", get(handlers::get_projects_handler))
+        .route("/tilesets/{project_id}", get(handlers::get_tileset_handler))
+        .route("/tilesets/models/{*gltf_path}", get(handlers::get_model_handler))
+        // adding state and CORS
+        .with_state(app_state)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any) // OR restrict to specific domain
+                .allow_headers(Any)
+                .allow_methods(Any),
+        );
+
+    // running the Axum app on some address
+    let server_host = &CONFIG.server.host;
+    let server_port = CONFIG.server.port;
+    let ip: Ipv4Addr = server_host.parse().expect("Invalid IP address");
+    let addr = SocketAddr::from((ip, server_port));
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    println!("Server listening on http://{}...", addr);
+    axum::serve(listener, app).await.unwrap();
+
+    Ok(())
+}
