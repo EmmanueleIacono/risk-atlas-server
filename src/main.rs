@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
         .route("/tilesets/projects", get(handlers::get_projects_handler))
         .route("/tilesets/{project_id}", get(handlers::get_tileset_handler))
         .route("/tilesets/models/{*gltf_path}", get(handlers::get_model_handler))
+        .route("/geospatial/intersects", get(handlers::point_intersects_handler))
         // adding state and CORS
         .with_state(app_state)
         .layer(

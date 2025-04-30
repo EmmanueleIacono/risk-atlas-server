@@ -20,6 +20,13 @@ pub struct TileFilterStr {
     filters: Option<String> // e.g. "IfcSpace;IfcWall"
 }
 
+#[derive(Debug, Deserialize)]
+pub struct IntersectQuery {
+    lat: f64, // latitude (Y)
+    lon: f64, // longitude (X)
+    epsg: i32, // SRID
+}
+
 // HANDLERS
 pub async fn home_handler() -> impl IntoResponse {
     // returning just an HTML string
@@ -225,6 +232,50 @@ pub async fn get_model_handler(
         }
         Err(err) => {
             eprintln!("Error while fetching a model: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+        }
+    }
+}
+
+pub async fn point_intersects_handler(
+    Query(params): Query<IntersectQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // NOTE: ST_MakePoint expects (X, Y) -> (lon, lat)!
+    let sql = r#"
+                        SELECT district FROM gis.italian_water_districts
+                        WHERE ST_Intersects(
+                            geom,
+                            ST_Transform(
+                                ST_SetSRID(ST_MakePoint($1, $2), $3),
+                                ST_SRID(geom)
+                            )
+                        )
+                    "#;
+    
+    let rows = sqlx::query(sql)
+        .bind(params.lon) // $1
+        .bind(params.lat) // $2
+        .bind(params.epsg) // $3
+        .fetch_all(&state.pool)
+        .await;
+
+    match rows {
+        Ok(r) => {
+            // collecting districts, but keep going if a single row fails to deserialize
+            let features: Vec<String> = r.into_iter()
+                .filter_map(|row| row.try_get::<String, _>("district").ok())
+                .collect();
+
+            let payload = serde_json::json!({
+                "intersects": !features.is_empty(),
+                "features": features
+            });
+
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err(err) => {
+            eprintln!("DB error (intersects): {}", err);
             (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
         }
     }
