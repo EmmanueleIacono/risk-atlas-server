@@ -27,6 +27,12 @@ pub struct IntersectQuery {
     epsg: i32, // SRID
 }
 
+#[derive(Deserialize)]
+pub struct BBoxQuery {
+    bbox: String, // "minLon,minLat,maxLon,maxLat" -> e.g. "7.2,44.9,7.8,45.2"
+    epsg: i32, // SRID
+}
+
 // HANDLERS
 pub async fn home_handler() -> impl IntoResponse {
     // returning just an HTML string
@@ -243,15 +249,15 @@ pub async fn point_intersects_handler(
 ) -> impl IntoResponse {
     // NOTE: ST_MakePoint expects (X, Y) -> (lon, lat)!
     let sql = r#"
-                        SELECT district FROM gis.italian_water_districts
-                        WHERE ST_Intersects(
-                            geom,
-                            ST_Transform(
-                                ST_SetSRID(ST_MakePoint($1, $2), $3),
-                                ST_SRID(geom)
-                            )
-                        )
-                    "#;
+        SELECT district FROM gis.italian_water_districts
+        WHERE ST_Intersects(
+            geom,
+            ST_Transform(
+                ST_SetSRID(ST_MakePoint($1, $2), $3),
+                ST_SRID(geom)
+            )
+        )
+    "#;
     
     let rows = sqlx::query(sql)
         .bind(params.lon) // $1
@@ -277,6 +283,86 @@ pub async fn point_intersects_handler(
         Err(err) => {
             eprintln!("DB error (intersects): {}", err);
             (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
+        }
+    }
+}
+
+pub async fn get_districts_fgb_handler(
+    Query(q): Query<BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let parts: Vec<f64> = q.bbox.split(",").filter_map(|s| s.parse::<f64>().ok()).collect();
+
+    if parts.len() != 4 {
+        return (StatusCode::BAD_REQUEST, "bbox must be minLon,minLat,maxLon,maxLat").into_response();
+    }
+
+    let (min_x, min_y, max_x, max_y) = (parts[0], parts[1], parts[2], parts[3]);
+
+    // SQL
+    let sql = r#"
+        WITH bbox AS (
+            SELECT ST_Transform(
+                ST_MakeEnvelope($1, $2, $3, $4, $5),
+                ST_SRID(geom)
+            ) AS bbox
+            FROM gis.italian_water_districts
+            LIMIT 1
+        ), feats AS (
+            SELECT geom, uuid, district, eu_code
+            FROM gis.italian_water_districts, bbox
+            WHERE geom && bbox.bbox
+            AND ST_Intersects(geom, bbox.bbox)
+        )
+        SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+        FROM feats;
+    "#;
+    // let sql = r#"
+    //     SELECT ST_AsFlatGeobuf(distr)
+    //     FROM gis.italian_water_districts AS distr;
+    // "#; // this causes even more problems (too large fgb? fgb not serialized correctly?) -> try to use flatgeobuf crate to parse it
+    // let sql = r#"
+    //     WITH prova AS (
+    //         SELECT geom, uuid, district, eu_code FROM gis.italian_water_districts LIMIT 1
+    //     )
+    //     SELECT ST_AsFlatGeobuf(prova)
+    //     FROM prova;
+    // "#; // THIS WORKS but I'm not returning any properties as of now
+    // let sql = r#"
+        // WITH test AS (
+            // SELECT * FROM gis.italian_water_districts
+        // )
+        // SELECT ST_AsFlatGeobuf(test)
+        // FROM test;
+    // "#; // example from: https://www.openstreetmap.org/user/spwoodcock/diary/402948
+
+    let data = sqlx::query_scalar::<_, Option<Vec<u8>>>(sql)
+        .bind(min_x)
+        .bind(min_y)
+        .bind(max_x)
+        .bind(max_y)
+        .bind(q.epsg)
+        .fetch_one(&state.pool)
+        .await;
+
+    match data {
+        // actual data
+        Ok(Some(bin)) => Response::builder()
+            .status(StatusCode::OK) // 200
+            .header(header::CONTENT_TYPE, "application/x-flatgeobuf")
+            .header(header::ACCEPT_RANGES, "bytes")
+            .body(Body::from(bin))
+            .unwrap(),
+        // empty data
+        Ok(None) => Response::builder()
+            .status(StatusCode::NO_CONTENT) // 204
+            .body(Body::empty()) // no body, no type
+            .unwrap(),
+        // genuine error
+        Err(err) => {
+            eprintln!("FGB error: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response() // 500
         }
     }
 }
