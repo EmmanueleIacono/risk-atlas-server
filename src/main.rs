@@ -1,5 +1,5 @@
 use axum::{
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -10,7 +10,10 @@ use once_cell::sync::Lazy;
 use anyhow::Result;
 
 mod handlers;
+mod handlers_hazard_scores;
 mod helpers;
+mod helpers_hazard_scores;
+mod structs_hazard_scores;
 
 // storing config globally (just for demo)
 static CONFIG: Lazy<AppConfig> = Lazy::new(|| {
@@ -69,6 +72,8 @@ async fn main() -> Result<()> {
         .route("/tilesets/models/{*gltf_path}", get(handlers::get_model_handler))
         .route("/geospatial/intersects", get(handlers::point_intersects_handler))
         .route("/geospatial/fgb/districts", get(handlers::get_districts_fgb_handler))
+        .route("/risk-scores/hazards/flood", post(handlers_hazard_scores::get_flood_hazard_batch_scores_handler))
+        .route("/risk-scores/hazards/landslide", post(handlers_hazard_scores::get_landslide_hazard_batch_scores_handler))
         // adding state and CORS
         .with_state(app_state)
         .layer(
