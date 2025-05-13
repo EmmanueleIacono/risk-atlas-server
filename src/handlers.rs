@@ -301,6 +301,7 @@ pub async fn get_districts_fgb_handler(
     let (min_x, min_y, max_x, max_y) = (parts[0], parts[1], parts[2], parts[3]);
 
     // SQL
+    // !!!) the ::text cast needs to be explicit, even with varchar attributes, in order to work
     let sql = r#"
         WITH bbox AS (
             SELECT ST_Transform(
@@ -310,7 +311,11 @@ pub async fn get_districts_fgb_handler(
             FROM gis.italian_water_districts
             LIMIT 1
         ), feats AS (
-            SELECT geom, uuid, district, eu_code
+            SELECT
+                geom,
+                uuid::text AS uuid,
+                district::text AS district,
+                eu_code::text AS eu_code
             FROM gis.italian_water_districts, bbox
             WHERE geom && bbox.bbox
             AND ST_Intersects(geom, bbox.bbox)
@@ -318,24 +323,6 @@ pub async fn get_districts_fgb_handler(
         SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
         FROM feats;
     "#;
-    // let sql = r#"
-    //     SELECT ST_AsFlatGeobuf(distr)
-    //     FROM gis.italian_water_districts AS distr;
-    // "#; // this causes even more problems (too large fgb? fgb not serialized correctly?) -> try to use flatgeobuf crate to parse it
-    // let sql = r#"
-    //     WITH prova AS (
-    //         SELECT geom, uuid, district, eu_code FROM gis.italian_water_districts LIMIT 1
-    //     )
-    //     SELECT ST_AsFlatGeobuf(prova)
-    //     FROM prova;
-    // "#; // THIS WORKS but I'm not returning any properties as of now
-    // let sql = r#"
-        // WITH test AS (
-            // SELECT * FROM gis.italian_water_districts
-        // )
-        // SELECT ST_AsFlatGeobuf(test)
-        // FROM test;
-    // "#; // example from: https://www.openstreetmap.org/user/spwoodcock/diary/402948
 
     let data = sqlx::query_scalar::<_, Option<Vec<u8>>>(sql)
         .bind(min_x)
