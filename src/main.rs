@@ -74,6 +74,7 @@ async fn main() -> Result<()> {
         .route("/geospatial/fgb/districts", get(handlers::get_districts_fgb_handler))
         .route("/risk-scores/hazards/flood", post(handlers_hazard_scores::get_flood_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/landslide", post(handlers_hazard_scores::get_landslide_hazard_batch_scores_handler))
+        .route("/risk-scores/hazards/seismic", post(handlers_hazard_scores::get_seismic_hazard_batch_scores_handler))
         // adding state and CORS
         .with_state(app_state)
         .layer(
