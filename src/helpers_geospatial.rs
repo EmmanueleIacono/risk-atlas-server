@@ -1,0 +1,324 @@
+use std::{
+    collections::{
+        BTreeSet,
+        HashMap
+    },
+    io::Cursor
+};
+
+use anyhow::Result;
+use flatgeobuf::{
+    ColumnType,
+    FgbWriter,
+    FgbWriterOptions,
+    GeometryType
+};
+use geojson::{
+    Feature,
+    FeatureCollection,
+    Geometry,
+    Value as GeoValue,
+};
+use geozero::{
+    geojson::GeoJsonReader,
+    ColumnValue,
+    FeatureProcessor,
+    GeomProcessor,
+    GeozeroDatasource,
+    PropertyProcessor
+};
+use serde_json::Value;
+
+// HELPERS STRUCTS
+
+struct RemappingWriter<'a> {
+    /// The real writer that knows how to build FGB
+    inner: FgbWriter<'a>,
+    /// Map a property name -> stable column index
+    column_map: &'a HashMap<String, u32>,
+}
+
+// HELPERS STRUCT IMPLS
+
+impl<'a> RemappingWriter<'a> {
+    fn new(
+        all_keys: &'a BTreeSet<String>,
+        column_map: &'a HashMap<String, u32>,
+    ) -> Result<Self> {
+        // create the FgbWriter
+        let mut w = FgbWriter::create_with_options(
+            "buildings",
+            GeometryType::Polygon, // OSM building footprints are polygons
+            FgbWriterOptions {
+                write_index: true, // writing spatial index? YES
+                ..Default::default()
+            },
+        )?;
+
+        // declare every column in sorted order
+        for key in all_keys {
+            w.add_column(
+                key,
+                ColumnType::String,
+                |_fbb, col| col.nullable = true,
+            );
+        }
+
+        Ok(Self {
+            inner: w,
+            column_map,
+        })
+    }
+}
+
+// whenever GeoJsonReader calls "property(i, name, value)", ignore "i"
+// and instead look up "name" in column_map to find the "true" index
+impl<'a> PropertyProcessor for RemappingWriter<'a> {
+    fn property(
+        &mut self,
+        _i: usize,
+        colname: &str,
+        colval: &ColumnValue
+    ) -> geozero::error::Result<bool> {
+        if let Some(&correct_idx) = self.column_map.get(colname) {
+            // write the value into the correct column
+            self.inner.property(correct_idx as usize, colname, colval)?;
+        }
+        // if the feature has a tag not in column_map, ignore it
+        Ok(false)
+    }
+}
+
+// delegate the rest of the trait methods to inner
+impl<'a> GeomProcessor for RemappingWriter<'a> {
+    fn dimensions(&self) -> geozero::CoordDimensions {
+        self.inner.dimensions()
+    }
+    fn multi_dim(&self) -> bool {
+        self.inner.multi_dim()
+    }
+    fn srid(&mut self, srid: Option<i32>) -> geozero::error::Result<()> {
+        self.inner.srid(srid)
+    }
+    fn xy(&mut self, x: f64, y: f64, idx: usize) -> geozero::error::Result<()> {
+        self.inner.xy(x, y, idx)
+    }
+    fn coordinate(
+        &mut self, x: f64, y: f64, z: Option<f64>,
+        m: Option<f64>, t: Option<f64>,
+        tm: Option<u64>, idx: usize
+    ) -> geozero::error::Result<()> {
+        self.inner.coordinate(x, y, z, m, t, tm, idx)
+    }
+    fn empty_point(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.empty_point(idx)
+    }
+    fn point_begin(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.point_begin(idx)
+    }
+    fn point_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.point_end(idx)
+    }
+    fn multipoint_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multipoint_begin(size, idx)
+    }
+    fn multipoint_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multipoint_end(idx)
+    }
+    fn linestring_begin(&mut self, tagged: bool, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.linestring_begin(tagged, size, idx)
+    }
+    fn linestring_end(&mut self, tagged: bool, idx: usize) -> geozero::error::Result<()> {
+        self.inner.linestring_end(tagged, idx)
+    }
+    fn multilinestring_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multilinestring_begin(size, idx)
+    }
+    fn multilinestring_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multilinestring_end(idx)
+    }
+    fn polygon_begin(&mut self, tagged: bool, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.polygon_begin(tagged, size, idx)
+    }
+    fn polygon_end(&mut self, tagged: bool, idx: usize) -> geozero::error::Result<()> {
+        self.inner.polygon_end(tagged, idx)
+    }
+    fn multipolygon_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multipolygon_begin(size, idx)
+    }
+    fn multipolygon_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multipolygon_end(idx)
+    }
+    fn geometrycollection_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.geometrycollection_begin(size, idx)
+    }
+    fn geometrycollection_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.geometrycollection_end(idx)
+    }
+    fn circularstring_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.circularstring_begin(size, idx)
+    }
+    fn circularstring_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.circularstring_end(idx)
+    }
+    fn compoundcurve_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.compoundcurve_begin(size, idx)
+    }
+    fn compoundcurve_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.compoundcurve_end(idx)
+    }
+    fn curvepolygon_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.curvepolygon_begin(size, idx)
+    }
+    fn curvepolygon_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.curvepolygon_end(idx)
+    }
+    fn multicurve_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multicurve_begin(size, idx)
+    }
+    fn multicurve_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multicurve_end(idx)
+    }
+    fn multisurface_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multisurface_begin(size, idx)
+    }
+    fn multisurface_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.multisurface_end(idx)
+    }
+    fn triangle_begin(&mut self, tagged: bool, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.triangle_begin(tagged, size, idx)
+    }
+    fn triangle_end(&mut self, tagged: bool, idx: usize) -> geozero::error::Result<()> {
+        self.inner.triangle_end(tagged, idx)
+    }
+    fn polyhedralsurface_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.polyhedralsurface_begin(size, idx)
+    }
+    fn polyhedralsurface_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.polyhedralsurface_end(idx)
+    }
+    fn tin_begin(&mut self, size: usize, idx: usize) -> geozero::error::Result<()> {
+        self.inner.tin_begin(size, idx)
+    }
+    fn tin_end(&mut self, idx: usize) -> geozero::error::Result<()> {
+        self.inner.tin_end(idx)
+    }
+}
+
+// impl FeatureProcessor as a no-op wrapper
+// so GeoJsonReader can call "dataset_begin", "feature_begin", "feature_end", etc.
+impl<'a> FeatureProcessor for RemappingWriter<'a> {
+    fn dataset_begin(&mut self, _name: Option<&str>) -> geozero::error::Result<()> {
+        self.inner.dataset_begin(_name)
+    }
+    fn dataset_end(&mut self) -> geozero::error::Result<()> {
+        self.inner.dataset_end()
+    }
+    fn feature_begin(&mut self, idx: u64) -> geozero::error::Result<()> {
+        self.inner.feature_begin(idx)
+    }
+    fn feature_end(&mut self, idx: u64) -> geozero::error::Result<()> {
+        self.inner.feature_end(idx)
+    }
+    fn properties_begin(&mut self) -> geozero::error::Result<()> {
+        self.inner.properties_begin()
+    }
+    fn properties_end(&mut self) -> geozero::error::Result<()> {
+        self.inner.properties_end()
+    }
+    fn geometry_begin(&mut self) -> geozero::error::Result<()> {
+        self.inner.geometry_begin()
+    }
+    fn geometry_end(&mut self) -> geozero::error::Result<()> {
+        self.inner.geometry_end()
+    }
+}
+
+// HELPERS
+
+pub fn osm_to_geojson(
+    osm_json: &Value,
+) -> FeatureCollection {
+    let mut features = Vec::new();
+    if let Some(elements) = osm_json
+        .get("elements")
+        .and_then(|e| e.as_array()) {
+            for el in elements {
+                if el
+                    .get("type")
+                    .and_then(|t| t.as_str()) == Some("way") {
+                        if let (Some(coords), Some(tags)) = (
+                            el
+                                .get("geometry")
+                                .and_then(|g| g.as_array()),
+                            el
+                                .get("tags")
+                                .and_then(|t| t.as_object()),
+                        ) {
+                            let ring: Vec<Vec<f64>> = coords.iter().map(|pt| {
+                                vec![
+                                    pt.get("lon").and_then(Value::as_f64).unwrap_or_default(),
+                                    pt.get("lat").and_then(Value::as_f64).unwrap_or_default(),
+                                ]
+                            }).collect();
+                            
+                            let geom = Geometry::new(GeoValue::Polygon(vec![ring]));
+                            let mut feature = Feature {
+                                geometry: Some(geom),
+                                properties: None,
+                                id: None,
+                                bbox: None,
+                                foreign_members: None,
+                            };
+
+                            feature.properties = Some(tags.clone());
+                            features.push(feature);
+                        }
+                    }
+            }
+        }
+
+        FeatureCollection {
+            features,
+            bbox: None,
+            foreign_members: None,
+        }
+}
+
+pub fn geojson_to_flatgeobuf(
+    fc: &FeatureCollection,
+) -> Result<Vec<u8>> {
+    // 1.a building the union of all tag keys
+    let mut all_keys: BTreeSet<String> = BTreeSet::new();
+    for feat in &fc.features {
+        if let Some(props) = &feat.properties {
+            for key in props.keys() {
+                all_keys.insert(key.clone());
+            }
+        }
+    }
+
+    // 1.b building a name->column_index map (in sorted order)
+    // so that "the key at position N in the sorted set" is column N
+    let mut column_map: HashMap<String, u32> = HashMap::new();
+    for (idx, key) in all_keys.iter().enumerate() {
+        column_map.insert(key.clone(), idx as u32);
+    }
+
+    // 2. creating the fgb writer wrapper
+    let mut writer = RemappingWriter::new(&all_keys, &column_map)?;
+
+    // 3. feeding the geojson to the writer
+    let geojson_string = serde_json::to_string(fc)?;
+    let mut cursor = Cursor::new(geojson_string.as_bytes());
+    let mut reader = GeoJsonReader(&mut cursor);
+    // at this point every feature is slotted into the fixed schema
+    reader.process(&mut writer)?; // each property(name) -> correct "column_map[name]"
+
+    // 4. serializing the flatgeobuf buffer and returning
+    let mut buf = Vec::new();
+    // writer.write(&mut buf)?;
+    writer.inner.write(&mut buf)?;
+
+    Ok(buf)
+}

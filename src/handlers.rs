@@ -13,24 +13,12 @@ use serde_json::Value;
 
 use crate::AppState;
 use crate::helpers;
+use crate::structs_geospatial;
 
 // STRUCTS
 #[derive(Deserialize)]
 pub struct TileFilterStr {
     filters: Option<String> // e.g. "IfcSpace;IfcWall"
-}
-
-#[derive(Debug, Deserialize)]
-pub struct IntersectQuery {
-    lat: f64, // latitude (Y)
-    lon: f64, // longitude (X)
-    epsg: i32, // SRID
-}
-
-#[derive(Deserialize)]
-pub struct BBoxQuery {
-    bbox: String, // "minLon,minLat,maxLon,maxLat" -> e.g. "7.2,44.9,7.8,45.2"
-    epsg: i32, // SRID
 }
 
 // HANDLERS
@@ -244,7 +232,7 @@ pub async fn get_model_handler(
 }
 
 pub async fn point_intersects_handler(
-    Query(params): Query<IntersectQuery>,
+    Query(params): Query<structs_geospatial::IntersectQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     // NOTE: ST_MakePoint expects (X, Y) -> (lon, lat)!
@@ -258,7 +246,7 @@ pub async fn point_intersects_handler(
             )
         )
     "#;
-    
+
     let rows = sqlx::query(sql)
         .bind(params.lon) // $1
         .bind(params.lat) // $2
@@ -288,14 +276,14 @@ pub async fn point_intersects_handler(
 }
 
 pub async fn get_districts_fgb_handler(
-    Query(q): Query<BBoxQuery>,
+    Query(q): Query<structs_geospatial::BBoxQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     // split bbox
     let parts: Vec<f64> = q.bbox.split(",").filter_map(|s| s.parse::<f64>().ok()).collect();
 
     if parts.len() != 4 {
-        return (StatusCode::BAD_REQUEST, "bbox must be minLon,minLat,maxLon,maxLat").into_response();
+        return (StatusCode::BAD_REQUEST, "bbox must be 'minLon,minLat,maxLon,maxLat'").into_response();
     }
 
     let (min_x, min_y, max_x, max_y) = (parts[0], parts[1], parts[2], parts[3]);

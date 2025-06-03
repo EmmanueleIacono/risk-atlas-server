@@ -10,9 +10,12 @@ use once_cell::sync::Lazy;
 use anyhow::Result;
 
 mod handlers;
+mod handlers_geospatial;
 mod handlers_hazard_scores;
 mod helpers;
+mod helpers_geospatial;
 mod helpers_hazard_scores;
+mod structs_geospatial;
 mod structs_hazard_scores;
 
 // storing config globally (just for demo)
@@ -50,18 +53,22 @@ struct ServerConfig {
 // passing around a shared state (connection pool)
 #[derive(Clone)]
 struct AppState {
+    client: reqwest::Client,
     pool: Pool<Postgres>,
 }
 
 // main, with routes
 #[tokio::main]
 async fn main() -> Result<()> {
+    // init client for outgoing requests
+    let client = reqwest::Client::new();
+
     // init DB connection
     let pool = Pool::<Postgres>::connect(&CONFIG.database.url).await?;
     println!("Connected to the PostgreSQL database.");
 
     // build the Axum app
-    let app_state = AppState {pool};
+    let app_state = AppState {client, pool};
     let app = Router::new()
         // routes
         .route("/", get(handlers::home_handler))
@@ -72,6 +79,7 @@ async fn main() -> Result<()> {
         .route("/tilesets/models/{*gltf_path}", get(handlers::get_model_handler))
         .route("/geospatial/intersects", get(handlers::point_intersects_handler))
         .route("/geospatial/fgb/districts", get(handlers::get_districts_fgb_handler))
+        .route("/geospatial/osm/buildings", get(handlers_geospatial::get_osm_buildings_handler))
         .route("/risk-scores/hazards/flood", post(handlers_hazard_scores::get_flood_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/landslide", post(handlers_hazard_scores::get_landslide_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/seismic", post(handlers_hazard_scores::get_seismic_hazard_batch_scores_handler))

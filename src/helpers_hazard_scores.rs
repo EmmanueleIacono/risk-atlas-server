@@ -39,7 +39,7 @@ pub async fn batch_hazard_scores(
             let payload = serde_json::json!({ "error": "Database error" });
             (StatusCode::INTERNAL_SERVER_ERROR, Json(payload))
         })?;
-    
+
     // 4) map to output struct
     let scores = rows
         .into_iter()
