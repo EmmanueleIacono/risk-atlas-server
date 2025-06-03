@@ -317,7 +317,6 @@ pub fn geojson_to_flatgeobuf(
 
     // 4. serializing the flatgeobuf buffer and returning
     let mut buf = Vec::new();
-    // writer.write(&mut buf)?;
     writer.inner.write(&mut buf)?;
 
     Ok(buf)
