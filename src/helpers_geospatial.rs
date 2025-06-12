@@ -13,6 +13,11 @@ use flatgeobuf::{
     FgbWriterOptions,
     GeometryType
 };
+use geo::{
+    algorithm::contains::Contains,
+    Point,
+    Polygon
+};
 use geojson::{
     feature::Id,
     Feature,
@@ -49,7 +54,7 @@ impl<'a> RemappingWriter<'a> {
         // create the FgbWriter
         let mut w = FgbWriter::create_with_options(
             "buildings",
-            GeometryType::Polygon, // OSM building footprints are polygons
+            GeometryType::MultiPolygon, // OSM building footprints may be Polygons or MultiPolygons -> but forcing MultiPolygon
             FgbWriterOptions {
                 write_index: true, // writing spatial index? YES
                 ..Default::default()
@@ -245,48 +250,141 @@ pub fn osm_to_geojson(
         .get("elements")
         .and_then(|e| e.as_array()) {
             for el in elements {
-                if el
-                    .get("type")
-                    .and_then(|t| t.as_str()) == Some("way") {
-                        if let (Some (id), Some(coords), Some(tags)) = (
-                            el
-                                .get("id")
-                                .and_then(|id| id.as_number()),
-                            el
-                                .get("geometry")
-                                .and_then(|g| g.as_array()),
-                            el
-                                .get("tags")
-                                .and_then(|t| t.as_object()),
-                        ) {
-                            let ring: Vec<Vec<f64>> = coords.iter().map(|pt| {
-                                vec![
-                                    pt.get("lon").and_then(Value::as_f64).unwrap_or_default(),
-                                    pt.get("lat").and_then(Value::as_f64).unwrap_or_default(),
-                                ]
-                            }).collect();
-                            
-                            let osm_id = Id::Number(id.clone());
-                            let geom = Geometry::new(GeoValue::Polygon(vec![ring]));
-                            let mut feature = Feature {
-                                geometry: Some(geom),
-                                properties: None,
-                                id: Some(osm_id.clone()),
-                                bbox: None,
-                                foreign_members: None,
-                            };
+                match el.get("type").and_then(|t| t.as_str()) {
+                    // OSM "way" -> Polygons
+                    Some("way") => {
+                        let tags = el.get("tags").and_then(|t| t.as_object()).unwrap();
+                        let id = el.get("id").and_then(|v| v.as_number()).unwrap().clone();
+                        let coords = el.get("geometry").and_then(|g| g.as_array()).unwrap();
 
-                            // cloning all GeoJSON properties
-                            let mut props = tags.clone();
-                            // then, injecting the feature "id" into the properties
-                            props.insert(
-                                "osm_id".to_string(),
-                                Value::String(id.clone().to_string()),
-                            );
-                            feature.properties = Some(props);
-                            features.push(feature);
-                        }
+                        let ring = coords_to_ring(coords);
+                        let geom = Geometry::new(GeoValue::MultiPolygon(vec![vec![ring]])); // always emitting MultiPolygon
+                        let mut feat = Feature {
+                            geometry: Some(geom),
+                            properties: None,
+                            id: Some(Id::Number(id.clone())),
+                            bbox: None,
+                            foreign_members: None,
+                        };
+
+                        // carrying over the tags
+                        let mut props = tags.clone();
+                        props.insert(
+                            "osm_id".to_string(),
+                            Value::String(id.to_string())
+                        );
+                        feat.properties = Some(props);
+
+                        features.push(feat);
                     }
+
+                    // OSM "relations" -> MultiPolygons
+                    Some("relation") => {
+                        let tags = match el.get("tags").and_then(|t| t.as_object()) {
+                            Some(t) if t.get("type").and_then(|v| v.as_str()) == Some("multipolygon") => t,
+                            _ => continue,
+                        };
+
+                        let id = el.get("id").and_then(|v| v.as_number()).unwrap().clone();
+
+                        let mut outer_rings = Vec::new();
+                        let mut inner_rings = Vec::new();
+
+                        if let Some(members) = el.get("members").and_then(|m| m.as_array()) {
+                            for member in members {
+                                if member.get("type").and_then(|t| t.as_str()) != Some("way") {
+                                    continue;
+                                }
+                                let role = member.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                                let geom = member.get("geometry").and_then(|g| g.as_array()).unwrap();
+                                let ring = coords_to_ring(geom);
+
+                                // classifying roles (treating "outline" as outer, "part" as inner)
+                                if role.starts_with("outer") || role == "outline" {
+                                    outer_rings.push(ring);
+                                } else {
+                                    inner_rings.push(ring);
+                                }
+                            }
+                        }
+
+                        // building GeoJSON Value
+                        let gj_value = if outer_rings.len() == 1 {
+                            // single Polygon -> but wrapping all in a 1-entry MultiPolygon
+                            let mut rings = Vec::new();
+                            rings.push(outer_rings.into_iter().next().unwrap());
+                            rings.extend(inner_rings.into_iter());
+                            GeoValue::MultiPolygon(vec![rings])
+                        } else {
+                            // multiple exteriors -> MultiPolygon
+                            // grouping holes by which exterior contains them
+                            let mut multipolys = Vec::new();
+                            // turning each outer into a geo::Polygon for spatial testing
+                            let geo_exteriors: Vec<Polygon<f64>> = outer_rings
+                                .iter()
+                                .map(|r| {
+                                    Polygon::new(
+                                        r
+                                            .iter()
+                                            .map(|c| (c[0], c[1]))
+                                            .collect::<Vec<_>>()
+                                            .into(),
+                                        Vec::new(),
+                                    )
+                                })
+                                .collect();
+
+                            // preparing empty Vec of Vecs to collect holes per exterior
+                            let mut holes_for = vec![
+                                Vec::new();
+                                geo_exteriors.len()
+                            ];
+
+                            for hole in inner_rings {
+                                // picking a test point for the hole ring
+                                let test_pt = Point::new(hole[0][0], hole[0][1]);
+                                // finding which exterior contains the hole
+                                for (i, poly) in geo_exteriors.iter().enumerate() {
+                                    if poly.contains(&test_pt) {
+                                        holes_for[i].push(hole.clone());
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // emitting each polygon as [exterior, hole_1, hole_2, etc.]
+                            for (i, ext_ring) in outer_rings.into_iter().enumerate() {
+                                let mut rings = Vec::new();
+                                rings.push(ext_ring);
+                                rings.extend(holes_for[i].drain(..));
+                                multipolys.push(rings);
+                            }
+
+                            GeoValue::MultiPolygon(multipolys)
+                        };
+
+                        let geom = Geometry::new(gj_value);
+                        let mut feat = Feature {
+                            geometry: Some(geom),
+                            properties: None,
+                            id: Some(Id::Number(id.clone())),
+                            bbox: None,
+                            foreign_members: None,
+                        };
+
+                        // carrying over the tags
+                        let mut props = tags.clone();
+                        props.insert(
+                            "osm_id".to_string(),
+                            Value::String(id.to_string())
+                        );
+                        feat.properties = Some(props);
+
+                        features.push(feat);
+                    }
+
+                    _ => {}
+                }
             }
         }
 
@@ -332,4 +430,16 @@ pub fn geojson_to_flatgeobuf(
     writer.inner.write(&mut buf)?;
 
     Ok(buf)
+}
+
+// helper to turn a member's "geometry" array into a Vec<Vec<f64>>
+fn coords_to_ring(arr: &[Value]) -> Vec<Vec<f64>> {
+    arr.iter()
+        .map(|pt| {
+            vec![
+                pt.get("lon").and_then(Value::as_f64).unwrap_or_default(),
+                pt.get("lat").and_then(Value::as_f64).unwrap_or_default(),
+            ]
+        })
+        .collect()
 }
