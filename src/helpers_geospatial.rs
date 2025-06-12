@@ -14,10 +14,11 @@ use flatgeobuf::{
     GeometryType
 };
 use geojson::{
+    feature::Id,
     Feature,
     FeatureCollection,
     Geometry,
-    Value as GeoValue,
+    Value as GeoValue
 };
 use geozero::{
     geojson::GeoJsonReader,
@@ -247,7 +248,10 @@ pub fn osm_to_geojson(
                 if el
                     .get("type")
                     .and_then(|t| t.as_str()) == Some("way") {
-                        if let (Some(coords), Some(tags)) = (
+                        if let (Some (id), Some(coords), Some(tags)) = (
+                            el
+                                .get("id")
+                                .and_then(|id| id.as_number()),
                             el
                                 .get("geometry")
                                 .and_then(|g| g.as_array()),
@@ -262,16 +266,24 @@ pub fn osm_to_geojson(
                                 ]
                             }).collect();
                             
+                            let osm_id = Id::Number(id.clone());
                             let geom = Geometry::new(GeoValue::Polygon(vec![ring]));
                             let mut feature = Feature {
                                 geometry: Some(geom),
                                 properties: None,
-                                id: None,
+                                id: Some(osm_id.clone()),
                                 bbox: None,
                                 foreign_members: None,
                             };
 
-                            feature.properties = Some(tags.clone());
+                            // cloning all GeoJSON properties
+                            let mut props = tags.clone();
+                            // then, injecting the feature "id" into the properties
+                            props.insert(
+                                "osm_id".to_string(),
+                                Value::String(id.clone().to_string()),
+                            );
+                            feature.properties = Some(props);
                             features.push(feature);
                         }
                     }
