@@ -13,6 +13,6 @@ pub struct HazardPoint {
 // Output score per point
 #[derive(Debug, Serialize)]
 pub struct HazardScore {
-    pub id: i32,
+    pub id: String,
     pub score: f64,
 }

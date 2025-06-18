@@ -18,9 +18,13 @@ pub async fn get_flood_hazard_batch_scores_handler(
     Json(points): Json<Vec<structs_hazard_scores::HazardPoint>>,
 ) -> impl IntoResponse {
     // Call the batch scoring function in PostGIS
+    // let sql = r#"
+    //     SELECT id, score
+    //     FROM gis.score_hazard_batch($1::jsonb, $2, 'hazard_flood')
+    // "#;
     let sql = r#"
         SELECT id, score
-        FROM gis.score_hazard_batch($1::jsonb, $2, 'hazard_flood')
+        FROM gis.score_hazard_batch_v3($1::jsonb, $2, 'hazard_flood')
     "#;
 
     match helpers_hazard_scores::batch_hazard_scores(&state.pool, points, sql).await {
@@ -38,7 +42,7 @@ pub async fn get_landslide_hazard_batch_scores_handler(
     // Call the batch scoring function in PostGIS
     let sql = r#"
         SELECT id, score
-        FROM gis.score_hazard_batch($1::jsonb, $2, 'hazard_landslide')
+        FROM gis.score_hazard_batch_v3($1::jsonb, $2, 'hazard_landslide')
     "#;
 
     match helpers_hazard_scores::batch_hazard_scores(&state.pool, points, sql).await {
@@ -56,7 +60,7 @@ pub async fn get_seismic_hazard_batch_scores_handler(
     // Call the batch scoring function in PostGIS
     let sql = r#"
         SELECT id, score
-        FROM gis.score_seismic_hazard_batch($1::jsonb, $2)
+        FROM gis.score_seismic_hazard_batch_v2($1::jsonb, $2)
     "#;
 
     match helpers_hazard_scores::batch_hazard_scores(&state.pool, points, sql).await {
