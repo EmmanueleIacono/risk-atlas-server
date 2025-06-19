@@ -16,12 +16,14 @@ use crate::helpers;
 use crate::structs_geospatial;
 
 // STRUCTS
+
 #[derive(Deserialize)]
 pub struct TileFilterStr {
     filters: Option<String> // e.g. "IfcSpace;IfcWall"
 }
 
 // HANDLERS
+
 pub async fn home_handler() -> impl IntoResponse {
     // returning just an HTML string
     let html_content = r#"<h1>Welcome <i>home</i></h1>"#;
@@ -271,73 +273,6 @@ pub async fn point_intersects_handler(
         Err(err) => {
             eprintln!("DB error (intersects): {}", err);
             (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
-        }
-    }
-}
-
-pub async fn get_districts_fgb_handler(
-    Query(q): Query<structs_geospatial::BBoxQuery>,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    // split bbox
-    let parts: Vec<f64> = q.bbox.split(",").filter_map(|s| s.parse::<f64>().ok()).collect();
-
-    if parts.len() != 4 {
-        return (StatusCode::BAD_REQUEST, "bbox must be 'minLon,minLat,maxLon,maxLat'").into_response();
-    }
-
-    let (min_x, min_y, max_x, max_y) = (parts[0], parts[1], parts[2], parts[3]);
-
-    // SQL
-    // !!!) the ::text cast needs to be explicit, even with varchar attributes, in order to work
-    let sql = r#"
-        WITH bbox AS (
-            SELECT ST_Transform(
-                ST_MakeEnvelope($1, $2, $3, $4, $5),
-                ST_SRID(geom)
-            ) AS bbox
-            FROM gis.italian_water_districts
-            LIMIT 1
-        ), feats AS (
-            SELECT
-                geom,
-                uuid::text AS uuid,
-                district::text AS district,
-                eu_code::text AS eu_code
-            FROM gis.italian_water_districts, bbox
-            WHERE geom && bbox.bbox
-            AND ST_Intersects(geom, bbox.bbox)
-        )
-        SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
-        FROM feats;
-    "#;
-
-    let data = sqlx::query_scalar::<_, Option<Vec<u8>>>(sql)
-        .bind(min_x)
-        .bind(min_y)
-        .bind(max_x)
-        .bind(max_y)
-        .bind(q.epsg)
-        .fetch_one(&state.pool)
-        .await;
-
-    match data {
-        // actual data
-        Ok(Some(bin)) => Response::builder()
-            .status(StatusCode::OK) // 200
-            .header(header::CONTENT_TYPE, "application/x-flatgeobuf")
-            .header(header::ACCEPT_RANGES, "bytes")
-            .body(Body::from(bin))
-            .unwrap(),
-        // empty data
-        Ok(None) => Response::builder()
-            .status(StatusCode::NO_CONTENT) // 204
-            .body(Body::empty()) // no body, no type
-            .unwrap(),
-        // genuine error
-        Err(err) => {
-            eprintln!("FGB error: {}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response() // 500
         }
     }
 }

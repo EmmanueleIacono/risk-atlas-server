@@ -10,6 +10,168 @@ use crate::structs_geospatial;
 use crate::helpers_geospatial;
 use crate::AppState;
 
+// CONSTS
+
+// !!! #1) the ::text casts needs to be explicit, even with varchar attributes, in order to work
+// !!! #2) currently only the ::text cast works; ::numeric or others do not
+
+const REGIONS_SQL: &str = r#"
+    WITH bbox AS (
+        SELECT ST_Transform(
+            ST_MakeEnvelope($1, $2, $3, $4, $5),
+            ST_SRID(geom)
+        ) AS bbox
+        FROM gis.admin_bounds_italy
+        LIMIT 1
+    ), feats AS (
+        SELECT
+            ST_Transform(geom, 4326) AS geom,
+            den_reg::text AS "Denominazione",
+            COALESCE(ROUND((shape_leng / 1000)::numeric, 2), 0)::text AS "Lunghezza confini (km)",
+            COALESCE(ROUND((shape_area / 1000000)::numeric, 3), 0)::text AS "Superficie (kmq)"
+        FROM gis.admin_bounds_italy, bbox
+        WHERE geom && bbox.bbox
+        AND ST_Intersects(geom, bbox.bbox)
+        AND tipo = 'R'
+    )
+    SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+    FROM feats;
+"#;
+
+const PROVINCES_SQL: &str = r#"
+    WITH bbox AS (
+        SELECT ST_Transform(
+            ST_MakeEnvelope($1, $2, $3, $4, $5),
+            ST_SRID(geom)
+        ) AS bbox
+        FROM gis.admin_bounds_italy
+        LIMIT 1
+    ), feats AS (
+        SELECT
+            ST_Transform(geom, 4326) AS geom,
+            den_uts::text AS "Denominazione",
+            sigla::text AS "Sigla",
+            tipo_uts::text AS "Tipologia",
+            COALESCE(ROUND((shape_leng / 1000)::numeric, 2), 0)::text AS "Lunghezza confini (km)",
+            COALESCE(ROUND((shape_area / 1000000)::numeric, 3), 0)::text AS "Superficie (kmq)"
+        FROM gis.admin_bounds_italy, bbox
+        WHERE geom && bbox.bbox
+        AND ST_Intersects(geom, bbox.bbox)
+        AND tipo = 'P'
+    )
+    SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+    FROM feats;
+"#;
+
+const MUNICIPALITIES_SQL: &str = r#"
+    WITH bbox AS (
+        SELECT ST_Transform(
+            ST_MakeEnvelope($1, $2, $3, $4, $5),
+            ST_SRID(geom)
+        ) AS bbox
+        FROM gis.admin_bounds_italy
+        LIMIT 1
+    ), feats AS (
+        SELECT
+            ST_Transform(geom, 4326) AS geom,
+            COALESCE(comune::text, '') AS "Comune",
+            COALESCE(comune_a::text, '') AS "Altre denominazioni",
+            COALESCE(ROUND((shape_leng / 1000)::numeric, 2), 0)::text AS "Lunghezza confini (km)",
+            COALESCE(ROUND((shape_area / 1000000)::numeric, 3), 0)::text AS "Superficie (kmq)"
+        FROM gis.admin_bounds_italy, bbox
+        WHERE geom && bbox.bbox
+        AND ST_Intersects(geom, bbox.bbox)
+        AND tipo = 'C'
+    )
+    SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+    FROM feats;
+"#;
+
+const WATER_DISTRICTS_SQL: &str = r#"
+    WITH bbox AS (
+        SELECT ST_Transform(
+            ST_MakeEnvelope($1, $2, $3, $4, $5),
+            ST_SRID(geom)
+        ) AS bbox
+        FROM gis.italian_water_districts
+        LIMIT 1
+    ), feats AS (
+        SELECT
+            geom,
+            uuid::text AS uuid,
+            district::text AS district,
+            eu_code::text AS eu_code
+        FROM gis.italian_water_districts, bbox
+        WHERE geom && bbox.bbox
+        AND ST_Intersects(geom, bbox.bbox)
+    )
+    SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+    FROM feats;
+"#;
+
+const HAZARD_FLOODING_AREAS_SQL: &str = r#"
+    WITH bbox AS (
+        SELECT ST_Transform(
+            ST_MakeEnvelope($1, $2, $3, $4, $5),
+            ST_SRID(geom)
+        ) AS bbox
+        FROM gis.hazard_flood
+        LIMIT 1
+    ), feats AS (
+        SELECT
+            ST_Transform(geom, 4326) AS geom,
+            scenario::text AS "Scenario"
+        FROM gis.hazard_flood, bbox
+        WHERE geom && bbox.bbox
+        AND ST_Intersects(geom, bbox.bbox)
+    )
+    SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+    FROM feats;
+"#;
+
+const HAZARD_LANDSLIDE_AREAS_SQL: &str = r#"
+    WITH bbox AS (
+        SELECT ST_Transform(
+            ST_MakeEnvelope($1, $2, $3, $4, $5),
+            ST_SRID(geom)
+        ) AS bbox
+        FROM gis.hazard_landslide
+        LIMIT 1
+    ), feats AS (
+        SELECT
+            ST_Transform(geom, 4326) AS geom,
+            scenario::text AS "Scenario"
+        FROM gis.hazard_landslide, bbox
+        WHERE geom && bbox.bbox
+        AND ST_Intersects(geom, bbox.bbox)
+    )
+    SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+    FROM feats;
+"#;
+
+const HAZARD_PGA_POINTS_SQL: &str = r#"
+    WITH bbox AS (
+        SELECT ST_Transform(
+            ST_MakeEnvelope($1, $2, $3, $4, $5),
+            ST_SRID(geom)
+        ) AS bbox
+        FROM gis.italian_peak_ground_acceleration
+        LIMIT 1
+    ), feats AS (
+        SELECT
+            ST_Transform(geom, 4326) AS geom,
+            id::text AS "ID",
+            ag::text AS "Peak Ground Acceleration - standard (%g)",
+            perc::text AS "Peak Ground Acceleration - 16th percentile (%g)",
+            perc_1::text AS "Peak Ground Acceleration - 84th percentile (%g)"
+        FROM gis.italian_peak_ground_acceleration, bbox
+        WHERE geom && bbox.bbox
+        AND ST_Intersects(geom, bbox.bbox)
+    )
+    SELECT ST_AsFlatGeobuf(feats, TRUE, 'geom') AS fgb
+    FROM feats;
+"#;
+
 // HANDLERS
 
 pub async fn get_osm_buildings_handler(
@@ -78,4 +240,109 @@ pub async fn get_osm_buildings_handler(
         .header(header::ACCEPT_RANGES, "bytes")
         .body(Body::from(buf))
         .unwrap()
+}
+
+pub async fn get_admin_bounds_regions_fgb_handler(
+    Query(q): Query<structs_geospatial::BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let (min_x, min_y, max_x, max_y) = match helpers_geospatial::parse_bbox(&q.bbox) {
+        Ok(t) => t,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // fetch the data
+    helpers_geospatial::fetch_fgb(min_x, min_y, max_x, max_y, q.epsg, &state.pool, REGIONS_SQL)
+        .await
+}
+
+pub async fn get_admin_bounds_provinces_fgb_handler(
+    Query(q): Query<structs_geospatial::BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let (min_x, min_y, max_x, max_y) = match helpers_geospatial::parse_bbox(&q.bbox) {
+        Ok(t) => t,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // fetch the data
+    helpers_geospatial::fetch_fgb(min_x, min_y, max_x, max_y, q.epsg, &state.pool, PROVINCES_SQL)
+        .await
+}
+
+pub async fn get_admin_bounds_municipalities_fgb_handler(
+    Query(q): Query<structs_geospatial::BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let (min_x, min_y, max_x, max_y) = match helpers_geospatial::parse_bbox(&q.bbox) {
+        Ok(t) => t,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // fetch the data
+    helpers_geospatial::fetch_fgb(min_x, min_y, max_x, max_y, q.epsg, &state.pool, MUNICIPALITIES_SQL)
+        .await
+}
+
+pub async fn get_water_districts_fgb_handler(
+    Query(q): Query<structs_geospatial::BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let (min_x, min_y, max_x, max_y) = match helpers_geospatial::parse_bbox(&q.bbox) {
+        Ok(t) => t,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // fetch the data
+    helpers_geospatial::fetch_fgb(min_x, min_y, max_x, max_y, q.epsg, &state.pool, WATER_DISTRICTS_SQL)
+        .await
+}
+
+pub async fn get_hazard_flooding_areas_fgb_handler(
+    Query(q): Query<structs_geospatial::BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let (min_x, min_y, max_x, max_y) = match helpers_geospatial::parse_bbox(&q.bbox) {
+        Ok(t) => t,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // fetch the data
+    helpers_geospatial::fetch_fgb(min_x, min_y, max_x, max_y, q.epsg, &state.pool, HAZARD_FLOODING_AREAS_SQL)
+        .await
+}
+
+pub async fn get_hazard_landslide_areas_fgb_handler(
+    Query(q): Query<structs_geospatial::BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let (min_x, min_y, max_x, max_y) = match helpers_geospatial::parse_bbox(&q.bbox) {
+        Ok(t) => t,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // fetch the data
+    helpers_geospatial::fetch_fgb(min_x, min_y, max_x, max_y, q.epsg, &state.pool, HAZARD_LANDSLIDE_AREAS_SQL)
+        .await
+}
+
+pub async fn get_hazard_pga_points_fgb_handler(
+    Query(q): Query<structs_geospatial::BBoxQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // split bbox
+    let (min_x, min_y, max_x, max_y) = match helpers_geospatial::parse_bbox(&q.bbox) {
+        Ok(t) => t,
+        Err(resp) => return resp.into_response(),
+    };
+
+    // fetch the data
+    helpers_geospatial::fetch_fgb(min_x, min_y, max_x, max_y, q.epsg, &state.pool, HAZARD_PGA_POINTS_SQL)
+        .await
 }

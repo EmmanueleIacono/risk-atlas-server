@@ -7,6 +7,11 @@ use std::{
 };
 
 use anyhow::Result;
+use axum::{
+    body::Body,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response}
+};
 use flatgeobuf::{
     ColumnType,
     FgbWriter,
@@ -34,6 +39,10 @@ use geozero::{
     PropertyProcessor
 };
 use serde_json::Value;
+use sqlx::{
+    Pool,
+    Postgres
+};
 
 // HELPERS STRUCTS
 
@@ -442,4 +451,56 @@ fn coords_to_ring(arr: &[Value]) -> Vec<Vec<f64>> {
             ]
         })
         .collect()
+}
+
+pub fn parse_bbox(bbox: &str) -> Result<(f64, f64, f64, f64), (StatusCode, &'static str)> {
+    let parts: Vec<f64> = bbox
+        .split(',')
+        .filter_map(|s| s.parse::<f64>().ok())
+        .collect();
+
+    if parts.len() != 4 {
+        Err((StatusCode::BAD_REQUEST, "bbox must be 'minLon,minLat,maxLon,maxLat'"))
+    } else {
+        Ok((parts[0], parts[1], parts[2], parts[3]))
+    }
+}
+
+pub async fn fetch_fgb(
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+    epsg: i32,
+    pool: &Pool<Postgres>,
+    sql: &'static str,
+) -> Response {
+    let data = sqlx::query_scalar::<_, Option<Vec<u8>>>(sql)
+        .bind(min_x)
+        .bind(min_y)
+        .bind(max_x)
+        .bind(max_y)
+        .bind(epsg)
+        .fetch_one(pool)
+        .await;
+
+    match data {
+        // actual data
+        Ok(Some(bin)) => Response::builder()
+            .status(StatusCode::OK) // 200
+            .header(header::CONTENT_TYPE, "application/x-flatgeobuf")
+            .header(header::ACCEPT_RANGES, "bytes")
+            .body(Body::from(bin))
+            .unwrap(),
+        // empty data
+        Ok(None) => Response::builder()
+            .status(StatusCode::NO_CONTENT) // 204
+            .body(Body::empty()) // no body, no type
+            .unwrap(),
+        // genuine error
+        Err(err) => {
+            eprintln!("FGB error: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response() // 500
+        }
+    }
 }
