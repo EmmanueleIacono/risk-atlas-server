@@ -115,13 +115,13 @@ const HAZARD_FLOODING_AREAS_SQL: &str = r#"
             ST_MakeEnvelope($1, $2, $3, $4, $5),
             ST_SRID(geom)
         ) AS bbox
-        FROM gis.hazard_flood
+        FROM gis.mv_hazard_flood_segmented
         LIMIT 1
     ), feats AS (
         SELECT
             ST_Transform(geom, 4326) AS geom,
             scenario::text AS "Scenario"
-        FROM gis.hazard_flood, bbox
+        FROM gis.mv_hazard_flood_segmented, bbox
         WHERE geom && bbox.bbox
         AND ST_Intersects(geom, bbox.bbox)
     )
@@ -135,13 +135,13 @@ const HAZARD_LANDSLIDE_AREAS_SQL: &str = r#"
             ST_MakeEnvelope($1, $2, $3, $4, $5),
             ST_SRID(geom)
         ) AS bbox
-        FROM gis.hazard_landslide
+        FROM gis.mv_hazard_landslide_segmented
         LIMIT 1
     ), feats AS (
         SELECT
             ST_Transform(geom, 4326) AS geom,
             scenario::text AS "Scenario"
-        FROM gis.hazard_landslide, bbox
+        FROM gis.mv_hazard_landslide, bbox_segmented
         WHERE geom && bbox.bbox
         AND ST_Intersects(geom, bbox.bbox)
     )
