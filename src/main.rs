@@ -1,10 +1,13 @@
 use axum::{
+    Extension,
     routing::{get, post},
     Router,
 };
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use sqlx::{Pool, Postgres};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use config as config_loader; // rename to avoid conflict with config field name
 use once_cell::sync::Lazy;
 use anyhow::Result;
@@ -69,13 +72,19 @@ struct AppState {
 // main, with routes
 #[tokio::main]
 async fn main() -> Result<()> {
+    // broadcast channel
+    let (tx_inner, _) = broadcast::channel::<String>(100);
+    let tx = Arc::new(tx_inner);
+
     // launch MQTT listener as background task
+    let tx_for_mqtt = tx.clone();
     let mqtt_config = &CONFIG.mqtt_broker;
     tokio::spawn(async {
-        handlers_iot::spawn_mqtt_listener(
+        handlers_iot::spawn_mqtt_listener_with_broadcast(
             &mqtt_config.host,
             mqtt_config.port,
             &mqtt_config.client_id,
+            tx_for_mqtt
         ).await
     });
 
@@ -108,6 +117,9 @@ async fn main() -> Result<()> {
         .route("/risk-scores/hazards/flood", post(handlers_hazard_scores::get_flood_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/landslide", post(handlers_hazard_scores::get_landslide_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/seismic", post(handlers_hazard_scores::get_seismic_hazard_batch_scores_handler))
+        // WS routes
+        .route("/ws-sensors", get(handlers_iot::ws_handler))
+        .layer(Extension(tx.clone())) // passing the broadcast sender via an Extension
         // adding state and CORS
         .with_state(app_state)
         .layer(

@@ -5,9 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
-axum = "0.8.1"
+axum = {version = "0.8.1", features = ["ws"]}
 config = "0.15.6"
 flatgeobuf = "4.6.0"
+futures-util = "0.3.31"
 geo = "0.30.0"
 geojson = "0.24.2"
 geozero = {version = "0.14.0"}
