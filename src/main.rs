@@ -12,6 +12,7 @@ use anyhow::Result;
 mod handlers;
 mod handlers_geospatial;
 mod handlers_hazard_scores;
+mod handlers_iot;
 mod helpers;
 mod helpers_geospatial;
 mod helpers_hazard_scores;
@@ -36,12 +37,20 @@ static CONFIG: Lazy<AppConfig> = Lazy::new(|| {
 #[derive(Debug, serde::Deserialize)]
 struct AppConfig {
     database: DatabaseConfig,
+    mqtt_broker: MqttBrokerConfig,
     server: ServerConfig,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct DatabaseConfig {
     url: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MqttBrokerConfig {
+    host: String,
+    port: u16,
+    client_id: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -60,6 +69,16 @@ struct AppState {
 // main, with routes
 #[tokio::main]
 async fn main() -> Result<()> {
+    // launch MQTT listener as background task
+    let mqtt_config = &CONFIG.mqtt_broker;
+    tokio::spawn(async {
+        handlers_iot::spawn_mqtt_listener(
+            &mqtt_config.host,
+            mqtt_config.port,
+            &mqtt_config.client_id,
+        ).await
+    });
+
     // init client for outgoing requests
     let client = reqwest::Client::new();
 

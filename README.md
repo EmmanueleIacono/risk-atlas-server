@@ -8,6 +8,11 @@ In order to connect to a database, this project requires the presence of a `conf
 [database]
 url = postgresql://database_user:database_pw@database_host:database_port/database_name
 
+[mqtt_broker]
+host = your.own.broker.ip (e.g. 127.0.0.1)
+port = your broker port number (e.g. 1883)
+client_id = your client id of choice (e.g. rust_server)
+
 [server]
 host = your.own.server.ip (e.g. 127.0.0.1)
 port = your port number of choice (e.g. 3000)
