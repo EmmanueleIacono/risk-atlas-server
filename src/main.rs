@@ -117,6 +117,7 @@ async fn main() -> Result<()> {
         .route("/risk-scores/hazards/flood", post(handlers_hazard_scores::get_flood_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/landslide", post(handlers_hazard_scores::get_landslide_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/seismic", post(handlers_hazard_scores::get_seismic_hazard_batch_scores_handler))
+        .route("/iot/sensors", get(handlers_iot::get_available_sensors))
         // WS routes
         .route("/ws-sensors", get(handlers_iot::ws_handler))
         .layer(Extension(tx.clone())) // passing the broadcast sender via an Extension

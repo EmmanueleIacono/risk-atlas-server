@@ -1,7 +1,9 @@
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::Extension,
+    extract::{Extension, State},
+    http::StatusCode,
     response::IntoResponse,
+    Json,
 };
 use futures_util::{StreamExt, SinkExt}; // for socket.split()
 use rumqttc::{
@@ -16,7 +18,11 @@ use std::{
     sync::Arc,
     time::Duration
 };
+use sqlx::Row;
+use serde_json::Value;
 use tokio::{sync::broadcast, time::sleep};
+
+use crate::AppState;
 
 pub async fn spawn_mqtt_listener_with_broadcast(
     host: &str,
@@ -87,6 +93,51 @@ async fn handle_ws(
         let msg = Message::Text(json_payload.into());
         if sender.send(msg).await.is_err() {
             break; // client disconnected
+        }
+    }
+}
+
+pub async fn get_available_sensors(
+    State(state): State<AppState>
+) -> impl IntoResponse {
+    let query = r#"SELECT sensor_id, name, description, lat, lon, ground_h, project_id, element_id
+                         FROM iot.sensors
+                         ORDER BY name"#;
+
+    let rows = sqlx::query(query)
+        .fetch_all(&state.pool)
+        .await;
+
+    match rows {
+        Ok(rows) => {
+            let result_json: Vec<Value> = rows.into_iter().map(|_row| {
+                let sensor_id: String = _row.try_get("sensor_id").unwrap_or_default();
+                let name: String = _row.try_get("name").unwrap_or_default();
+                let description: String = _row.try_get("description").unwrap_or_default();
+                let lat: f64 = _row.try_get("lat").unwrap_or(0.0);
+                let lon: f64 = _row.try_get("lon").unwrap_or(0.0);
+                let ground_h: f64 = _row.try_get("ground_h").unwrap_or(0.0);
+                let project_id: Option<String> = _row.try_get("project_id").ok();
+                let element_id: Option<String> = _row.try_get("element_id").ok();
+
+                serde_json::json!({
+                    "sensor_id": sensor_id,
+                    "name": name,
+                    "description": description,
+                    "lat": lat,
+                    "lon": lon,
+                    "ground_h": ground_h,
+                    "project_id": project_id,
+                    "element_id": element_id,
+                })
+            })
+            .collect();
+
+            (StatusCode::OK, Json(result_json)).into_response()
+        }
+        Err(err) => {
+            eprintln!("Error while fetching available sensors: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
         }
     }
 }
