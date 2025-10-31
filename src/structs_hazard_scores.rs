@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 // Input point from client
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HazardPoint {
-    pub id: i32,
+    pub id: String,
     pub lon: f64,
     pub lat: f64,
 }
