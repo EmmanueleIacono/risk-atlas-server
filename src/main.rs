@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
         .route("/geospatial/fgb/hazards/flooding", get(handlers_geospatial::get_hazard_flooding_areas_fgb_handler))
         .route("/geospatial/fgb/hazards/landslide", get(handlers_geospatial::get_hazard_landslide_areas_fgb_handler))
         .route("/geospatial/fgb/hazards/seismic", get(handlers_geospatial::get_hazard_pga_points_fgb_handler))
-        .route("/risk-scores/hazards/flood", post(handlers_hazard_scores::get_flood_hazard_batch_scores_handler))
+        .route("/risk-scores/hazards/flooding", post(handlers_hazard_scores::get_flood_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/landslide", post(handlers_hazard_scores::get_landslide_hazard_batch_scores_handler))
         .route("/risk-scores/hazards/seismic", post(handlers_hazard_scores::get_seismic_hazard_batch_scores_handler))
         .route("/iot/sensors", get(handlers_iot::get_available_sensors))

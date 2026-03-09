@@ -25,7 +25,12 @@ const REGIONS_SQL: &str = r#"
         LIMIT 1
     ), feats AS (
         SELECT
-            ST_Transform(geom, 4326) AS geom,
+            ST_Transform(
+                ST_Multi(
+                    ST_CollectionExtract(geom, 3)
+                ),
+                4326
+            ) AS geom,
             den_reg::text AS "Denominazione",
             COALESCE(ROUND((shape_leng / 1000)::numeric, 2), 0)::text AS "Lunghezza confini (km)",
             COALESCE(ROUND((shape_area / 1000000)::numeric, 3), 0)::text AS "Superficie (kmq)"
@@ -48,7 +53,12 @@ const PROVINCES_SQL: &str = r#"
         LIMIT 1
     ), feats AS (
         SELECT
-            ST_Transform(geom, 4326) AS geom,
+            ST_Transform(
+                ST_Multi(
+                    ST_CollectionExtract(geom, 3)
+                ),
+                4326
+            ) AS geom,
             den_uts::text AS "Denominazione",
             sigla::text AS "Sigla",
             tipo_uts::text AS "Tipologia",
@@ -73,7 +83,12 @@ const MUNICIPALITIES_SQL: &str = r#"
         LIMIT 1
     ), feats AS (
         SELECT
-            ST_Transform(geom, 4326) AS geom,
+            ST_Transform(
+                ST_Multi(
+                    ST_CollectionExtract(geom, 3)
+                ),
+                4326
+            ) AS geom,
             COALESCE(comune::text, '') AS "Comune",
             COALESCE(comune_a::text, '') AS "Altre denominazioni",
             COALESCE(ROUND((shape_leng / 1000)::numeric, 2), 0)::text AS "Lunghezza confini (km)",
@@ -119,8 +134,14 @@ const HAZARD_FLOODING_AREAS_SQL: &str = r#"
         LIMIT 1
     ), feats AS (
         SELECT
-            ST_Transform(geom, 4326) AS geom,
-            scenario::text AS "Scenario"
+            ST_Transform(
+                ST_Multi(
+                    ST_CollectionExtract(geom, 3)
+                ),
+                4326
+            ) AS geom,
+            scenario::text AS "Scenario",
+            scenario_code::text AS "Scenario code"
         FROM gis.mv_hazard_flood_segmented, bbox
         WHERE geom && bbox.bbox
         AND ST_Intersects(geom, bbox.bbox)
@@ -139,9 +160,15 @@ const HAZARD_LANDSLIDE_AREAS_SQL: &str = r#"
         LIMIT 1
     ), feats AS (
         SELECT
-            ST_Transform(geom, 4326) AS geom,
-            scenario::text AS "Scenario"
-        FROM gis.mv_hazard_landslide, bbox_segmented
+            ST_Transform(
+                ST_Multi(
+                    ST_CollectionExtract(geom, 3)
+                ),
+                4326
+            ) AS geom,
+            scenario::text AS "Scenario",
+            scenario_code::text AS "Scenario code"
+        FROM gis.mv_hazard_landslide_segmented, bbox
         WHERE geom && bbox.bbox
         AND ST_Intersects(geom, bbox.bbox)
     )
@@ -161,6 +188,8 @@ const HAZARD_PGA_POINTS_SQL: &str = r#"
         SELECT
             ST_Transform(geom, 4326) AS geom,
             id::text AS "ID",
+            lon::text AS "Longitude",
+            lat::text AS "Latitude",
             ag::text AS "Peak Ground Acceleration - standard (%g)",
             perc::text AS "Peak Ground Acceleration - 16th percentile (%g)",
             perc_1::text AS "Peak Ground Acceleration - 84th percentile (%g)"
