@@ -43,6 +43,10 @@ use sqlx::{
     Pool,
     Postgres
 };
+use tokio::time::{
+    sleep,
+    Duration
+};
 
 // HELPERS STRUCTS
 
@@ -251,6 +255,51 @@ impl<'a> FeatureProcessor for RemappingWriter<'a> {
 
 // HELPERS
 
+pub async fn query_overpass(client: &reqwest::Client, query: &str) -> Result<Value, String> {
+    let max_attempts = 3;
+    let mut delay = Duration::from_secs(2);
+
+    // fixed amount of retries with exponential backoff
+    for attempt in 1..=max_attempts {
+        // 1. forward query to Overpass API
+        let resp = client
+            .post("https://overpass-api.de/api/interpreter")
+            .body(query.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
+
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read body: {}", e))?;
+
+        // Overpass returns timeout errors as plain text or HTML,
+        // not as a JSON parse failure - detect before parsing
+        if text.contains("timeout") || text.contains("Too many requests") {
+            if attempt < max_attempts {
+                eprintln!(
+                    "Overpass busy (attempt {}/{}), retrying in {:?}...",
+                    attempt, max_attempts, delay
+                );
+                sleep(delay).await;
+                delay *= 2; // exponential backoff: 2s, 4s, 8s...
+                continue;
+            } else {
+                return Err("Overpass API is busy, please try again later".to_string());
+            }
+        }
+
+        // Now safe to parse as JSON
+        let json: Value = serde_json::from_str(&text)
+            .map_err(|er| format!("JSON parse error: {}", er))?;
+
+        return Ok(json);
+    }
+
+    Err("Overpass API unavailable after retries".to_string())
+}
+
 pub fn osm_to_geojson(
     osm_json: &Value,
 ) -> FeatureCollection {
@@ -262,11 +311,26 @@ pub fn osm_to_geojson(
                 match el.get("type").and_then(|t| t.as_str()) {
                     // OSM "way" -> Polygons
                     Some("way") => {
-                        let tags = el.get("tags").and_then(|t| t.as_object()).unwrap();
-                        let id = el.get("id").and_then(|v| v.as_number()).unwrap().clone();
-                        let coords = el.get("geometry").and_then(|g| g.as_array()).unwrap();
+                        let tags = match el.get("tags").and_then(|t| t.as_object()) {
+                            Some(t) => t,
+                            None => continue,
+                        };
+                        let id = match el.get("id").and_then(|v| v.as_number()) {
+                            Some(n) => n.clone(),
+                            None => continue,
+                        };
+                        let coords = match el.get("geometry").and_then(|g| g.as_array()) {
+                            Some(g) => g,
+                            None => continue,
+                        };
 
-                        let ring = coords_to_ring(coords);
+                        let mut ring = match coords_to_ring(coords) {
+                            Some(r) => r,
+                            None => continue,
+                        };
+
+                        ensure_closed(&mut ring);
+
                         let geom = Geometry::new(GeoValue::MultiPolygon(vec![vec![ring]])); // always emitting MultiPolygon
                         let mut feat = Feature {
                             geometry: Some(geom),
@@ -305,15 +369,24 @@ pub fn osm_to_geojson(
                                     continue;
                                 }
                                 let role = member.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                                let geom = member.get("geometry").and_then(|g| g.as_array()).unwrap();
-                                let ring = coords_to_ring(geom);
+                                let geom = match member.get("geometry").and_then(|g| g.as_array()) {
+                                    Some(g) => g,
+                                    None => continue,
+                                };
+                                let mut ring = match coords_to_ring(geom) {
+                                    Some(r) => r,
+                                    None => continue,
+                                };
 
-                                // classifying roles (treating "outline" as outer, "part" as inner)
-                                if role.starts_with("outer") || role == "outline" {
+                                ensure_closed(&mut ring);
+
+                                // classifying roles (treating "outline" and "part" as outer, too)
+                                if role.starts_with("outer") || role == "outline" || role == "part" || role.is_empty() {
                                     outer_rings.push(ring);
-                                } else {
+                                } else if role == "inner" || role == "hole" {
                                     inner_rings.push(ring);
                                 }
+                                // anything else -> silently skip
                             }
                         }
 
@@ -442,15 +515,35 @@ pub fn geojson_to_flatgeobuf(
 }
 
 // helper to turn a member's "geometry" array into a Vec<Vec<f64>>
-fn coords_to_ring(arr: &[Value]) -> Vec<Vec<f64>> {
-    arr.iter()
+fn coords_to_ring(arr: &[Value]) -> Option<Vec<Vec<f64>>> {
+    let ring: Vec<Vec<f64>> = arr
+        .iter()
         .map(|pt| {
-            vec![
-                pt.get("lon").and_then(Value::as_f64).unwrap_or_default(),
-                pt.get("lat").and_then(Value::as_f64).unwrap_or_default(),
-            ]
+            let lon = pt.get("lon").and_then(Value::as_f64)?;
+            let lat = pt.get("lat").and_then(Value::as_f64)?;
+            Some(vec![lon, lat])
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()?;
+
+    // rejecting degenerate rings
+    // (fewer than 4 points -> unclosed triangle minimum)
+    if ring.len() < 4 {
+        return None;
+    }
+
+    Some(ring)
+}
+
+// GeoJSON requires the first and last coordinate of a ring to be identical
+// OSM ways usually close themselves, but it's worth enforcing
+fn ensure_closed(ring: &mut Vec<Vec<f64>>) {
+    if ring.len() < 2 {
+        return;
+    }
+    if ring.first() != ring.last() {
+        let first = ring[0].clone();
+        ring.push(first);
+    }
 }
 
 pub fn parse_bbox(bbox: &str) -> Result<(f64, f64, f64, f64), (StatusCode, &'static str)> {
