@@ -4,7 +4,6 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
-// use serde_json::Value;
 
 use crate::structs_geospatial;
 use crate::helpers_geospatial;
@@ -228,28 +227,6 @@ pub async fn get_osm_buildings_handler(
     );
     println!("{}", query);
 
-    // // 2. forward query to Overpass API
-    // let resp = match state.client
-    //     .post("https://overpass-api.de/api/interpreter")
-    //     .body(query)
-    //     .send()
-    //     .await
-    // {
-    //     Ok(r) => r,
-    //     Err(err) => {
-    //         eprintln!("Error contacting Overpass API: {}", err);
-    //         return (StatusCode::BAD_GATEWAY, "Bad Gateway").into_response();
-    //     }
-    // };
-
-    // // 3. parse JSON
-    // let osm_json: Value = match resp.json().await {
-    //     Ok(json) => json,
-    //     Err(err) => {
-    //         eprintln!("Error parsing Overpass response: {}", err);
-    //         return (StatusCode::BAD_GATEWAY, "Invalid Overpass response").into_response();
-    //     }
-    // };
     // 2+3. perform Overpass API query and parse the output
     let osm_json = match helpers_geospatial::query_overpass(&state.client, &query).await {
         Ok(json) => json,
